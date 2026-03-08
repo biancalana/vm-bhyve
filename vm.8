@@ -617,6 +617,13 @@ network share) where you may want to store iso images.
 .Op Fl d Ar datastore
 .Op Fl t Ar template
 .Op Fl s Ar size
+.Op Fl c Ar vCPUs
+.Op Fl m Ar memory
+.Op Fl C
+.Op Fl k Ar ssh_key_file
+.Op Fl n Ar network_config
+.Op Fl p Ar packages
+.Op Fl u Ar users
 .Ar name
 .Xc
 Create a new virtual machine.
@@ -644,6 +651,48 @@ suffix should not be included.
 .It Fl s Ar size
 The size of disk image to create in bytes.
 Unless specified, the guest image will be a sparse file 20GB in size.
+.It Fl c Ar vCPUs
+Number of virtual CPUs to assign to the virtual machine.
+.It Fl m Ar memory
+Amount of memory to allocate to the virtual machine.
+.It Fl C
+Enable cloud-init support for the virtual machine.
+When enabled, a cloud-init seed ISO will be created and attached to the VM.
+.It Fl k Ar ssh_key_file
+Path to an SSH public key file to inject into the VM via cloud-init.
+Requires
+.Fl C
+to be specified.
+.It Fl n Ar network_config
+Network configuration for cloud-init in the format
+.Qq ip=address/prefix;gateway=gateway;nameservers=ns1,ns2;hostname=hostname .
+Requires
+.Fl C
+to be specified.
+.It Fl p Ar packages
+Comma-separated list of packages to install via cloud-init (e.g., "vim,curl,git").
+Requires
+.Fl C
+to be specified.
+.It Fl u Ar user
+Create a single user via cloud-init.
+Format is
+.Qq username ,
+or
+.Qq username:password ,
+or
+.Qq username:password:groups .
+The password should be plaintext and will be hashed by cloud-init.
+If groups include
+.Sy sudo
+or
+.Sy wheel ,
+the user will be granted sudo access with
+.Sy NOPASSWD .
+Only one user can be specified.
+Requires
+.Fl C
+to be specified.
 .El
 .It Cm destroy Ar name
 Removes the specified virtual machine from the system, deleting all associated
