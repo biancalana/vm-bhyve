@@ -141,9 +141,9 @@ core::list(){
 core::create(){
     local _name _opt _size _vmdir _disk _disk_dev _num=0
     local _zfs_opts _disk_size _template="default" _ds="default" _ds_path _img _cpu _memory _uuid
-    local _enable_cloud_init _cloud_init_dir _ssh_public_key _ssh_key_file _network_config _mac
+    local _enable_cloud_init _cloud_init_dir _ssh_public_key _ssh_key_file _network_config _mac _packages _users
 
-    while getopts d:t:s:i:c:m:Ck:n: _opt ; do
+    while getopts d:t:s:i:c:m:Ck:n:p:u: _opt ; do
         case $_opt in
             t) _template=${OPTARG} ;;
             s) _size=${OPTARG} ;;
@@ -154,6 +154,8 @@ core::create(){
             k) _ssh_key_file=${OPTARG} ;;
             C) _enable_cloud_init='true' ;;
             n) _network_config=${OPTARG} ;;
+            p) _packages=${OPTARG} ;;
+            u) _users=${OPTARG} ;;
 
             *) util::usage ;;
         esac
@@ -179,6 +181,16 @@ core::create(){
     config::get "_disk_size" "disk0_size" "20G"
     config::get "_zfs_opts" "zfs_dataset_opts"
 
+    # get packages from template config if not specified on command line
+    if [ -z "${_packages}" ]; then
+        config::get "_packages" "cloudinit_packages"
+    fi
+
+    # get user from template config if not specified on command line
+    if [ -z "${_users}" ]; then
+        config::get "_users" "cloudinit_user"
+    fi
+
     # make sure template has a disk before we start creating anything
     [ -z "${_disk}" ] && util::err "template is missing disk0_name specification"
 
@@ -188,6 +200,16 @@ core::create(){
       [ -z "${_enable_cloud_init}" ] && util::err "cloud-init is required for injecting public key. Use -C to enable it."
       [ ! -r "${_ssh_key_file}" ] && util::err "can't read file with public key (${_ssh_key_file})"
       _ssh_public_key="$(cat "${_ssh_key_file}")"
+    fi
+
+    # validate packages option
+    if [ -n "${_packages}" ]; then
+        [ -z "${_enable_cloud_init}" ] && util::err "cloud-init is required for installing packages. Use -C to enable it."
+    fi
+
+    # validate users option
+    if [ -n "${_users}" ]; then
+        [ -z "${_enable_cloud_init}" ] && util::err "cloud-init is required for creating users. Use -C to enable it."
     fi
 
     # if we're on zfs, make a new filesystem
@@ -212,6 +234,8 @@ core::create(){
     # Optional overrides
     [ -n "${_cpu}" ] && config::set "${_name}" "cpu" "${_cpu}"
     [ -n "${_memory}" ] && config::set "${_name}" "memory" "${_memory}"
+    [ -n "${_packages}" ] && config::set "${_name}" "cloudinit_packages" "${_packages}"
+    [ -n "${_users}" ] && config::set "${_name}" "cloudinit_user" "${_users}"
     # use cmd line size for disk 0 if specified
     [ -n "${_size}" ] && _disk_size="${_size}"
 
@@ -308,11 +332,59 @@ resize_rootfs: True
 manage_etc_hosts: localhost
 EOF
 
-    if [ -n "${_ssh_public_key}" ]; then
+    # add top-level ssh_authorized_keys if specified and no user is being created
+    if [ -n "${_ssh_public_key}" ] && [ -z "${_users}" ]; then
         cat << EOF >> "${_cloud_init_dir}/user-data"
 ssh_authorized_keys:
   - ${_ssh_public_key}
 EOF
+    fi
+
+    # add packages section if specified
+    if [ -n "${_packages}" ]; then
+        echo "" >> "${_cloud_init_dir}/user-data"
+        echo "packages:" >> "${_cloud_init_dir}/user-data"
+        # split packages by comma and add as YAML list
+        echo "${_packages}" | tr ',' '\n' | while read -r pkg; do
+            # trim whitespace and skip empty lines
+            pkg=$(echo "${pkg}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -n "${pkg}" ] && echo "  - ${pkg}" >> "${_cloud_init_dir}/user-data"
+        done
+    fi
+
+    # add users section if specified (single user only)
+    if [ -n "${_users}" ]; then
+        echo "" >> "${_cloud_init_dir}/user-data"
+        echo "users:" >> "${_cloud_init_dir}/user-data"
+
+        # parse single user:password:groups format
+        _username=$(echo "${_users}" | cut -d: -f1)
+        _password=$(echo "${_users}" | cut -d: -f2 -s)
+        _groups=$(echo "${_users}" | cut -d: -f3 -s)
+
+        echo "  - name: ${_username}" >> "${_cloud_init_dir}/user-data"
+        echo "    lock_passwd: False" >> "${_cloud_init_dir}/user-data"
+
+        # add password if specified
+        if [ -n "${_password}" ] && [ "${_password}" != "${_username}" ]; then
+            echo "    passwd: ${_password}" >> "${_cloud_init_dir}/user-data"
+        fi
+
+        # add groups if specified
+        if [ -n "${_groups}" ]; then
+            echo "    groups: ${_groups}" >> "${_cloud_init_dir}/user-data"
+        fi
+
+        # add sudo if user is in sudo/wheel group
+        if [ -n "${_groups}" ] && echo "${_groups}" | grep -qE '(sudo|wheel)'; then
+            echo "    sudo: ALL=(ALL) NOPASSWD:ALL" >> "${_cloud_init_dir}/user-data"
+        fi
+
+        # add ssh_authorized_keys if specified
+        if [ -n "${_ssh_public_key}" ]; then
+            echo "    ssh_authorized_keys:" >> "${_cloud_init_dir}/user-data"
+            echo "      - ${_ssh_public_key}" >> "${_cloud_init_dir}/user-data"
+        fi
     fi
 
     makefs -t cd9660 -o R,L=cidata "${VM_DS_PATH}/${_name}/seed.iso" ${_cloud_init_dir} || util::err "Can't write seed.iso for cloud-init"
